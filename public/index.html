@@ -110,7 +110,9 @@
             align-items: center;
             gap: 10px;
             padding: 10px;
-            border-bottom: 1px dashed rgba(148, 163, 184, .15)
+            border-bottom: 1px dashed rgba(148, 163, 184, .15);
+            background: rgba(2, 6, 23, .3);
+            border-radius: 10px
         }
 
         .file:last-child {
@@ -178,13 +180,51 @@
             width: 0;
             background: linear-gradient(90deg, #22c55e, #16a34a)
         }
+
+        /* Drag & drop styling (Jira-like) */
+        .file[draggable="true"] {
+            cursor: grab;
+        }
+
+        .file.dragging {
+            opacity: .45;
+            outline: 2px dashed rgba(134, 239, 172, .7);
+        }
+
+        .file.drop-above::before,
+        .file.drop-below::after {
+            content: "";
+            display: block;
+            height: 0;
+            border-top: 3px solid #22c55e;
+            border-radius: 3px;
+        }
+
+        .file.drop-above::before {
+            margin-top: -2px;
+        }
+
+        .file.drop-below::after {
+            margin-bottom: -2px;
+        }
+
+        .handle {
+            user-select: none;
+            font-size: 16px;
+            line-height: 1;
+            padding: 6px 8px;
+            border: 1px solid rgba(148, 163, 184, .25);
+            border-radius: 8px;
+            background: #0b1224
+        }
     </style>
 </head>
 
 <body>
     <div class="wrap">
         <h1>Merge PDFs (Server-Side)</h1>
-        <p class="sub">Add PDFs, reorder, then click Merge. The server combines them and returns a download.</p>
+        <p class="sub">Add PDFs, reorder (drag & drop), then click Merge. The server combines them and returns a
+            download.</p>
 
         <div class="grid">
             <section class="panel">
@@ -202,7 +242,7 @@
                     <button id="clear" class="warn">Clear list</button>
                 </div>
 
-                <div id="files" class="files"></div>
+                <div id="files" class="files" aria-label="Files list (drag to reorder)"></div>
             </section>
 
             <section class="panel">
@@ -211,7 +251,7 @@
                         style="flex:1" />
                     <button id="merge" class="primary">Merge PDFs</button>
                 </div>
-                <div class="hint" style="margin-top:8px">Order matters. Use ↑/↓ next to each file.</div>
+                <div class="hint" style="margin-top:8px">Order matters. Drag rows (or use ↑/↓).</div>
                 <div class="status" id="status"></div>
                 <div class="progress" style="margin-top:8px">
                     <div id="bar" class="bar"></div>
@@ -245,19 +285,23 @@
             state.files.forEach((f, i) => {
                 const row = document.createElement('div');
                 row.className = 'file';
+                row.setAttribute('draggable', 'true');
+                row.dataset.idx = String(i);
                 row.innerHTML = `
+          <span class="handle" title="Drag to reorder">☰</span>
           <span class="badge">${String(i + 1).padStart(2, '0')}</span>
           <div class="name" title="${f.name}">${f.name}</div>
           <div class="hint">${bytes(f.size)}</div>
           <div class="controls">
-            <button class="ghost" data-act="up" data-idx="${i}">↑</button>
-            <button class="ghost" data-act="down" data-idx="${i}">↓</button>
-            <button class="warn" data-act="remove" data-idx="${i}">×</button>
+            <button class="ghost" data-act="up" data-idx="${i}" title="Move up">↑</button>
+            <button class="ghost" data-act="down" data-idx="${i}" title="Move down">↓</button>
+            <button class="warn" data-act="remove" data-idx="${i}" title="Remove">×</button>
           </div>`;
                 filesEl.appendChild(row);
             });
         }
 
+        // Button controls (up/down/remove)
         filesEl.addEventListener('click', (e) => {
             const btn = e.target.closest('button');
             if (!btn) return;
@@ -271,6 +315,8 @@
                 state.files.splice(i, 1);
             }
             renderList();
+            wireDragList(); // rebind listeners
+            setStatus(`${state.files.length} file(s) ready.`);
         });
 
         function addFiles(fileList) {
@@ -282,16 +328,112 @@
                 if (!seen.has(key)) state.files.push({ file: f, name: f.name, size: f.size });
             }
             renderList();
+            wireDragList();
             if (state.files.length) setStatus(`${state.files.length} file(s) ready.`);
         }
 
+        // Drag & drop add
         picker.addEventListener('change', (e) => addFiles(e.target.files));
         ['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('drag') }));
         ['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('drag') }));
         drop.addEventListener('drop', (e) => addFiles(e.dataTransfer.files));
 
+        // Actions
         $('#clear').addEventListener('click', () => { state.files = []; renderList(); setStatus('Cleared.'); resetBar(); });
-        $('#sortName').addEventListener('click', () => { state.files.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })); renderList(); });
+        $('#sortName').addEventListener('click', () => { state.files.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })); renderList(); wireDragList(); });
+
+        // --- Jira-like drag to reorder within the list ---
+        let dragIdx = null;
+        function wireDragList() {
+            const rows = Array.from(filesEl.querySelectorAll('.file'));
+
+            rows.forEach(row => {
+                row.addEventListener('dragstart', (e) => {
+                    dragIdx = +row.dataset.idx;
+                    row.classList.add('dragging');
+                    e.dataTransfer.effectAllowed = 'move';
+                    // Needed for Firefox to initiate drag
+                    e.dataTransfer.setData('text/plain', dragIdx);
+                });
+
+                row.addEventListener('dragend', () => {
+                    rows.forEach(r => r.classList.remove('dragging', 'drop-above', 'drop-below'));
+                    dragIdx = null;
+                    // Re-number badges after DOM order change
+                    renumberAfterDomOrder();
+                });
+
+                row.addEventListener('dragover', (e) => {
+                    e.preventDefault(); // allow drop
+                    const target = e.currentTarget;
+                    rows.forEach(r => r.classList.remove('drop-above', 'drop-below'));
+                    const rect = target.getBoundingClientRect();
+                    const before = e.clientY < rect.top + rect.height / 2;
+                    target.classList.add(before ? 'drop-above' : 'drop-below');
+                });
+
+                row.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    const target = e.currentTarget;
+                    const from = dragIdx;
+                    const to = +target.dataset.idx;
+                    if (from === null || to === null || from === to) return;
+
+                    const rect = target.getBoundingClientRect();
+                    const before = e.clientY < rect.top + rect.height / 2;
+
+                    // Move DOM node visually
+                    const draggingEl = filesEl.querySelector('.file.dragging');
+                    if (!draggingEl) return;
+
+                    if (before) filesEl.insertBefore(draggingEl, target);
+                    else filesEl.insertBefore(draggingEl, target.nextSibling);
+
+                    // Update state order to match DOM
+                    syncStateOrderFromDom();
+
+                    rows.forEach(r => r.classList.remove('drop-above', 'drop-below'));
+                    setStatus(`${state.files.length} file(s) ready. Order updated.`);
+                });
+            });
+        }
+
+        function renumberAfterDomOrder() {
+            const rows = Array.from(filesEl.querySelectorAll('.file'));
+            rows.forEach((row, i) => {
+                row.dataset.idx = String(i);
+                const badge = row.querySelector('.badge');
+                if (badge) badge.textContent = String(i + 1).padStart(2, '0');
+                const up = row.querySelector('[data-act="up"]');
+                const down = row.querySelector('[data-act="down"]');
+                const remove = row.querySelector('[data-act="remove"]');
+                if (up) up.dataset.idx = String(i);
+                if (down) down.dataset.idx = String(i);
+                if (remove) remove.dataset.idx = String(i);
+            });
+        }
+
+        function syncStateOrderFromDom() {
+            const rows = Array.from(filesEl.querySelectorAll('.file'));
+            const newOrder = rows.map(r => +r.dataset.idx /* old index before re-render */);
+            // Build a mapping from old index->file
+            // But because we re-render only after merge/remove/sort, here we
+            // re-create order by reading names shown in DOM:
+            const namesInDom = rows.map(r => r.querySelector('.name')?.textContent || '');
+            const mapByNameSize = new Map(state.files.map(f => [f.name + ':' + f.size, f]));
+            const reordered = [];
+            for (const row of rows) {
+                const nm = row.querySelector('.name')?.textContent || '';
+                const size = (row.querySelector('.hint')?.textContent || '').match(/([\d.]+)\s*(B|KB|MB)$/i);
+                // safer: find by name only (names are unique in our addFiles dedupe key)
+                const found = state.files.find(f => f.name === nm);
+                if (found) reordered.push(found);
+            }
+            if (reordered.length === state.files.length) {
+                state.files = reordered;
+            }
+            renumberAfterDomOrder();
+        }
 
         async function merge() {
             if (!state.files.length) return setStatus('Add some PDF files first.', true);
@@ -304,8 +446,14 @@
                 setStatus('Uploading and merging…');
                 const fd = new FormData();
                 // Append in the exact displayed order:
-                for (const item of state.files) {
-                    fd.append('files', item.file, item.name);
+                // Read rows in DOM order to be 100% sure.
+                const rows = Array.from(filesEl.querySelectorAll('.file'));
+                for (const row of rows) {
+                    const idxInState = state.files.findIndex(f => f.name === row.querySelector('.name').textContent);
+                    if (idxInState >= 0) {
+                        const item = state.files[idxInState];
+                        fd.append('files', item.file, item.name);
+                    }
                 }
                 fd.append('outName', out);
 
