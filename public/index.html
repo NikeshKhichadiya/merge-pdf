@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Merge PDFs</title>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --panel: #111827;
+            --accent: #22c55e;
+            --muted: #94a3b8;
+            --text: #e5e7eb;
+            --danger: #ef4444
+        }
+
+        * {
+            box-sizing: border-box
+        }
+
+        body {
+            margin: 0;
+            font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Helvetica, Arial, sans-serif;
+            background: #0b1224;
+            color: var(--text)
+        }
+
+        .wrap {
+            max-width: 980px;
+            margin: 40px auto;
+            padding: 24px
+        }
+
+        h1 {
+            margin: 0 0 6px;
+            font-size: clamp(22px, 3.5vw, 32px)
+        }
+
+        p.sub {
+            margin: 0 0 20px;
+            color: var(--muted)
+        }
+
+        .panel {
+            background: rgba(17, 24, 39, .66);
+            backdrop-filter: blur(6px);
+            border: 1px solid rgba(148, 163, 184, .15);
+            border-radius: 14px;
+            padding: 18px
+        }
+
+        .row {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            align-items: center
+        }
+
+        input[type="text"],
+        button {
+            border-radius: 10px;
+            border: 1px solid rgba(148, 163, 184, .25);
+            padding: 10px 12px;
+            font-size: 14px;
+            background: #0b1224;
+            color: var(--text)
+        }
+
+        button {
+            cursor: pointer
+        }
+
+        button.primary {
+            background: linear-gradient(90deg, #22c55e, #16a34a);
+            border: none
+        }
+
+        button.ghost {
+            background: transparent
+        }
+
+        button.warn {
+            background: transparent;
+            border-color: rgba(239, 68, 68, .5);
+            color: #fecaca
+        }
+
+        .drop {
+            border: 2px dashed rgba(148, 163, 184, .35);
+            border-radius: 14px;
+            padding: 18px;
+            text-align: center;
+            color: var(--muted);
+            transition: .2s
+        }
+
+        .drop.drag {
+            border-color: var(--accent);
+            color: #bbf7d0;
+            background: rgba(34, 197, 94, .07)
+        }
+
+        .files {
+            margin-top: 14px;
+        }
+
+        .file {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px;
+            border-bottom: 1px dashed rgba(148, 163, 184, .15)
+        }
+
+        .file:last-child {
+            border-bottom: none
+        }
+
+        .file .name {
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap
+        }
+
+        .badge {
+            font-size: 12px;
+            color: #cbd5e1;
+            border: 1px solid rgba(148, 163, 184, .25);
+            padding: 2px 8px;
+            border-radius: 999px
+        }
+
+        .controls {
+            display: flex;
+            gap: 6px
+        }
+
+        .hint {
+            font-size: 12px;
+            color: var(--muted)
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 1.2fr .8fr;
+            gap: 14px
+        }
+
+        @media (max-width:820px) {
+            .grid {
+                grid-template-columns: 1fr
+            }
+        }
+
+        .status {
+            margin-top: 12px;
+            font-size: 13px;
+            color: #a7f3d0
+        }
+
+        .err {
+            color: #fecaca
+        }
+
+        .progress {
+            height: 8px;
+            width: 100%;
+            background: #0b1224;
+            border-radius: 999px;
+            border: 1px solid rgba(148, 163, 184, .25);
+            overflow: hidden
+        }
+
+        .bar {
+            height: 100%;
+            width: 0;
+            background: linear-gradient(90deg, #22c55e, #16a34a)
+        }
+    </style>
+</head>
+
+<body>
+    <div class="wrap">
+        <h1>Merge PDFs (Server-Side)</h1>
+        <p class="sub">Add PDFs, reorder, then click Merge. The server combines them and returns a download.</p>
+
+        <div class="grid">
+            <section class="panel">
+                <div id="drop" class="drop">
+                    <strong>Drag & drop</strong> PDFs here or
+                    <label style="text-decoration:underline;cursor:pointer">
+                        browse<input id="picker" type="file" accept="application/pdf" multiple hidden>
+                    </label>
+                    <div class="hint" style="margin-top:6px">Tip: Hold <kbd>Ctrl/Cmd</kbd> to select multiple files.
+                    </div>
+                </div>
+
+                <div class="row" style="margin-top:12px">
+                    <button id="sortName" class="ghost">Sort A→Z</button>
+                    <button id="clear" class="warn">Clear list</button>
+                </div>
+
+                <div id="files" class="files"></div>
+            </section>
+
+            <section class="panel">
+                <div class="row">
+                    <input id="outName" type="text" placeholder="Output filename (e.g., All Statements 2025.pdf)"
+                        style="flex:1" />
+                    <button id="merge" class="primary">Merge PDFs</button>
+                </div>
+                <div class="hint" style="margin-top:8px">Order matters. Use ↑/↓ next to each file.</div>
+                <div class="status" id="status"></div>
+                <div class="progress" style="margin-top:8px">
+                    <div id="bar" class="bar"></div>
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <script>
+        const state = { files: [] }; // [{file, name, size}]
+
+        const $ = (q) => document.querySelector(q);
+        const drop = $('#drop');
+        const picker = $('#picker');
+        const filesEl = $('#files');
+        const statusEl = $('#status');
+        const bar = $('#bar');
+
+        function bytes(n) {
+            if (n < 1024) return n + ' B';
+            if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+            return (n / 1024 / 1024).toFixed(1) + ' MB';
+        }
+
+        function setStatus(msg, isErr) { statusEl.textContent = msg; statusEl.className = 'status' + (isErr ? ' err' : ''); }
+        function setBar(p) { bar.style.width = Math.max(0, Math.min(100, p)) + '%'; }
+        function resetBar() { setBar(0); }
+
+        function renderList() {
+            filesEl.innerHTML = '';
+            state.files.forEach((f, i) => {
+                const row = document.createElement('div');
+                row.className = 'file';
+                row.innerHTML = `
+          <span class="badge">${String(i + 1).padStart(2, '0')}</span>
+          <div class="name" title="${f.name}">${f.name}</div>
+          <div class="hint">${bytes(f.size)}</div>
+          <div class="controls">
+            <button class="ghost" data-act="up" data-idx="${i}">↑</button>
+            <button class="ghost" data-act="down" data-idx="${i}">↓</button>
+            <button class="warn" data-act="remove" data-idx="${i}">×</button>
+          </div>`;
+                filesEl.appendChild(row);
+            });
+        }
+
+        filesEl.addEventListener('click', (e) => {
+            const btn = e.target.closest('button');
+            if (!btn) return;
+            const i = +btn.dataset.idx;
+            const act = btn.dataset.act;
+            if (act === 'up' && i > 0) {
+                [state.files[i - 1], state.files[i]] = [state.files[i], state.files[i - 1]];
+            } else if (act === 'down' && i < state.files.length - 1) {
+                [state.files[i + 1], state.files[i]] = [state.files[i], state.files[i + 1]];
+            } else if (act === 'remove') {
+                state.files.splice(i, 1);
+            }
+            renderList();
+        });
+
+        function addFiles(fileList) {
+            const arr = Array.from(fileList || []);
+            const pdfs = arr.filter(f => /pdf$/i.test(f.type) || /\.pdf$/i.test(f.name));
+            const seen = new Set(state.files.map(x => x.name + ':' + x.size));
+            for (const f of pdfs) {
+                const key = f.name + ':' + f.size;
+                if (!seen.has(key)) state.files.push({ file: f, name: f.name, size: f.size });
+            }
+            renderList();
+            if (state.files.length) setStatus(`${state.files.length} file(s) ready.`);
+        }
+
+        picker.addEventListener('change', (e) => addFiles(e.target.files));
+        ['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('drag') }));
+        ['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('drag') }));
+        drop.addEventListener('drop', (e) => addFiles(e.dataTransfer.files));
+
+        $('#clear').addEventListener('click', () => { state.files = []; renderList(); setStatus('Cleared.'); resetBar(); });
+        $('#sortName').addEventListener('click', () => { state.files.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })); renderList(); });
+
+        async function merge() {
+            if (!state.files.length) return setStatus('Add some PDF files first.', true);
+
+            let out = $('#outName').value.trim();
+            if (!out) out = 'merged.pdf';
+            if (!/\.pdf$/i.test(out)) out += '.pdf';
+
+            try {
+                setStatus('Uploading and merging…');
+                const fd = new FormData();
+                // Append in the exact displayed order:
+                for (const item of state.files) {
+                    fd.append('files', item.file, item.name);
+                }
+                fd.append('outName', out);
+
+                setBar(10);
+                const res = await fetch('/api/pdf/merge', { method: 'POST', body: fd });
+                setBar(60);
+
+                if (!res.ok) {
+                    const problem = await res.json().catch(() => ({}));
+                    throw new Error(problem?.message || `Server error (${res.status})`);
+                }
+
+                const blob = await res.blob();
+                setBar(90);
+
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = out;
+                a.click();
+                URL.revokeObjectURL(a.href);
+                setBar(100);
+                setStatus('Done. Your download should start.');
+            } catch (err) {
+                console.error(err);
+                setStatus(err.message || 'Failed to merge.', true);
+            } finally {
+                setTimeout(() => resetBar(), 1200);
+            }
+        }
+
+        $('#merge').addEventListener('click', merge);
+
+        // Prefill example filename
+        $('#outName').value = 'All Statements 2025.pdf';
+    </script>
+</body>
+
+</html>
